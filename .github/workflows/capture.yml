@@ -1,0 +1,72 @@
+name: Capture CHMI radar
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: radar-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Update daily archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/radar"
+          for offset in 1 0; do
+            day="$(date -u -d "$offset day ago" +%F)"
+            month="${day:0:7}"
+            tag="data-$month"
+            asset="radar-$day.tar.gz"
+            old="$RUNNER_TEMP/radar/old-$asset"
+            new="$RUNNER_TEMP/radar/$asset"
+
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --title "CHMI radar raw data $month" --notes "15-minute PseudoCAPPI 2 km observations. Source: CHMI Open Data, CC BY 4.0."
+            fi
+            gh release download "$tag" --pattern "$asset" --output "$old" 2>/dev/null || true
+
+            args=(--day "$day" --output "$new")
+            if [[ -f "$old" ]]; then args+=(--existing "$old"); fi
+            python -m prague_rain_radar.collect "${args[@]}"
+
+            if [[ -f "$new" ]] && { [[ ! -f "$old" ]] || ! cmp -s "$old" "$new"; }; then
+              gh release upload "$tag" "$new" --clobber
+            fi
+          done
+
+      - name: Record successful UTC day
+        shell: bash
+        run: |
+          set -euo pipefail
+          day="$(date -u +%F)"
+          mkdir -p status
+          if [[ "$(cat status/latest-day.txt 2>/dev/null || true)" == "$day" ]]; then exit 0; fi
+          printf '%s\n' "$day" > status/latest-day.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add status/latest-day.txt
+          git commit -m "chore: archive radar data for $day"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+

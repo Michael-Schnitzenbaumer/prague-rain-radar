@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+dist/
+build/
+*.egg-info/
+raw/
+frames/
+*.mp4
+*.tar.gz
+
